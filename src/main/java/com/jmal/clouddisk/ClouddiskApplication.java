@@ -19,7 +19,7 @@ public class ClouddiskApplication {
     public static void main(String[] args) {
         SecureUtil.disableBouncyCastle();
         SpringApplication application = new SpringApplication(ClouddiskApplication.class);
-        // 允许循环引用
+        // 允许循环引用1
         application.setAllowCircularReferences(true);
         application.run(args);
     }
