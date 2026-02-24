@@ -1,0 +1,438 @@
+package com.jmal.clouddisk.interceptor;
+
+import cn.hutool.core.convert.Convert;
+import cn.hutool.core.io.FileUtil;
+import cn.hutool.core.net.URLDecoder;
+import cn.hutool.core.text.CharSequenceUtil;
+import cn.hutool.core.util.BooleanUtil;
+import com.jmal.clouddisk.config.FileProperties;
+import com.jmal.clouddisk.model.FileDocument;
+import com.jmal.clouddisk.model.ShareDO;
+import com.jmal.clouddisk.oss.web.WebOssService;
+import com.jmal.clouddisk.service.Constants;
+import com.jmal.clouddisk.service.IFileService;
+import com.jmal.clouddisk.service.IShareService;
+import com.jmal.clouddisk.util.CaffeineUtil;
+import com.jmal.clouddisk.util.FastImageInfo;
+import com.jmal.clouddisk.util.FileContentTypeUtils;
+import com.luciad.imageio.webp.WebPWriteParam;
+import jakarta.servlet.ServletOutputStream;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import net.coobird.thumbnailator.Thumbnails;
+import net.coobird.thumbnailator.tasks.UnsupportedFormatException;
+import org.codehaus.plexus.util.StringUtils;
+import org.jetbrains.annotations.NotNull;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.stereotype.Component;
+import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.HandlerMapping;
+import org.springframework.web.util.UriUtils;
+
+import javax.imageio.IIOImage;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.FileCacheImageOutputStream;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
+/**
+ * @author jmal
+ * @Description 文件鉴权拦截器
+ * @Date 2020-01-31 22:04
+ */
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class FileInterceptor implements HandlerInterceptor {
+
+    /***
+     * 下载操作
+     */
+    private static final String DOWNLOAD = "download";
+    /**
+     * 预览
+     */
+    private static final String PREVIEW = "preview";
+    /***
+     * 剪裁图片
+     */
+    private static final String CROP = "crop";
+    /***
+     * 缩略图
+     */
+    private static final String THUMBNAIL = "thumbnail";
+    /***
+     * webp
+     */
+    private static final String WEBP = "webp";
+    /***
+     * 操作参数
+     */
+    private static final String OPERATION = "o";
+    /***
+     * fileId参数
+     */
+    private static final String SHARE_KEY = "shareKey";
+    /***
+     * 路径最小层级
+     */
+    private static final int MIN_COUNT = 2;
+
+    private final FileProperties fileProperties;
+
+    private final IFileService fileService;
+
+    private final AuthInterceptor authInterceptor;
+
+    private final IShareService shareService;
+
+    private final WebOssService webOssService;
+
+    @Override
+    public boolean preHandle(@NotNull HttpServletRequest request, @NotNull HttpServletResponse response, @NotNull Object handler) {
+        if (fileAuthError(request, response)) {
+            return false;
+        }
+        Path path = Paths.get(request.getRequestURI());
+        String encodedFilename = URLEncoder.encode(String.valueOf(path.getFileName()), StandardCharsets.UTF_8);
+        String operation = request.getParameter(OPERATION);
+        if (!CharSequenceUtil.isBlank(operation)) {
+            switch (operation) {
+                case DOWNLOAD -> {
+                    response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + path.getFileName());
+                    Path prePth = path.subpath(1, path.getNameCount());
+                    String ossPath = CaffeineUtil.getOssPath(prePth);
+                    if (ossPath != null) {
+                        webOssService.download(ossPath, prePth, request, response);
+                        return false;
+                    }
+                }
+                case PREVIEW -> {
+                    if (previewOssFile(request, response, path, encodedFilename)) return false;
+                }
+                case CROP -> handleCrop(request, response);
+                case THUMBNAIL -> thumbnail(request, response);
+                case WEBP -> webp(request, response);
+                default -> {
+                    return true;
+                }
+            }
+        } else {
+            return !previewOssFile(request, response, path, encodedFilename);
+        }
+        return true;
+    }
+
+    /**
+     * 预览oss文件
+     */
+    private boolean previewOssFile(@NotNull HttpServletRequest request, @NotNull HttpServletResponse response, Path path, String encodedFilename) {
+        Path prePth = path.subpath(1, path.getNameCount());
+        String ossPath = CaffeineUtil.getOssPath(prePth);
+        if (CharSequenceUtil.isNotBlank(ossPath)) {
+            response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "filename=" + encodedFilename);
+            webOssService.download(ossPath, prePth, request, response);
+            return true;
+        }
+        return false;
+    }
+
+    /***
+     * 文件鉴权是否失败
+     * 当有shareKey参数时说明是分享文件的访问
+     * shareKey 代表一个分享的文件或文件夹
+     * 判断当前uri所属的文件是否为该分享的文件或其子文件
+     * @return true 鉴权失败，false 鉴权成功
+     */
+    private boolean fileAuthError(HttpServletRequest request, HttpServletResponse response) {
+        String path = (String) request.getAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE);
+        request.setAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE, URLDecoder.decode(path, StandardCharsets.UTF_8));
+        Path uriPath = Paths.get(URLDecoder.decode(request.getRequestURI(), StandardCharsets.UTF_8));
+        String shareKey = request.getParameter(SHARE_KEY);
+        if (!CharSequenceUtil.isBlank(shareKey)) {
+            return validShareFile(request, uriPath, shareKey);
+        } else {
+            String username = authInterceptor.getUserNameByHeader(request, response);
+            if (!CharSequenceUtil.isBlank(username)) {
+                authInterceptor.setAuthorities(username);
+            }
+            int nameCount = uriPath.getNameCount();
+            if (nameCount < MIN_COUNT) {
+                return true;
+            }
+            if (nameCount == MIN_COUNT && path.startsWith("logo")) {
+                return false;
+            }
+            if (!CharSequenceUtil.isBlank(username) && username.equals(uriPath.getName(1).toString())) {
+                return false;
+            }
+            return isNotAllowAccess(getFileDocument(uriPath), request);
+        }
+    }
+
+    private boolean validShareFile(HttpServletRequest request, Path uriPath, String shareKey) {
+        FileDocument fileDocument = fileService.getById(shareKey);
+        if (!isNotAllowAccess(fileDocument, request)) {
+            // 判断当前uri所属的文件是否为该分享的文件或其子文件
+            FileDocument thisFile = getFileDocument(uriPath);
+            if (thisFile == null) {
+                return true;
+            }
+            if (thisFile.getPath().equals(fileDocument.getPath())) {
+                return false;
+            }
+            if (Boolean.TRUE.equals(fileDocument.getIsFolder())) {
+                String parentPath = fileDocument.getPath() + fileDocument.getName();
+                return !thisFile.getPath().startsWith(parentPath);
+            }
+        }
+        return true;
+    }
+
+    /***
+     * 判断文件是否不允许访问
+     * 如果为公共文件，或者分享有效期内的文件，则允许访问
+     * @return true 不允许访问，false 允许访问
+     */
+    public boolean isNotAllowAccess(FileDocument fileDocument, HttpServletRequest request) {
+        if (fileDocument == null) {
+            return true;
+        }
+        if (fileDocument.getIsPublic() != null && fileDocument.getIsPublic()) {
+            return false;
+        }
+        if (fileDocument.getIsTogether() != null && fileDocument.getIsTogether()) {
+            return false;
+        }
+        if (StringUtils.isNotEmpty(fileDocument.getSpaceFlag())) {
+            return false;
+        }
+        // 分享文件
+        if (fileDocument.getIsShare() != null) {
+            return validShareFile(fileDocument, request);
+        }
+        return true;
+    }
+
+    private boolean validShareFile(FileDocument fileDocument, HttpServletRequest request) {
+        if (System.currentTimeMillis() >= fileDocument.getExpiresAt()) {
+            // 过期了
+            return true;
+        }
+        if (fileDocument.getShareId() == null) {
+            return true;
+        }
+        ShareDO shareDO = shareService.getShare(fileDocument.getShareId());
+        if (shareDO == null) {
+            return true;
+        }
+        if (BooleanUtil.isFalse(shareDO.getIsPrivacy())) {
+            return false;
+        }
+        if (request == null) {
+            return true;
+        }
+        String shareToken = request.getHeader(Constants.SHARE_TOKEN);
+        if (CharSequenceUtil.isBlank(shareToken)) {
+            shareToken = request.getParameter(Constants.SHARE_TOKEN);
+        }
+        shareService.validShare(shareToken, shareDO.getId());
+        return false;
+    }
+
+    /**
+     * 跳过 WebP 实时转换的最大文件大小阈值（20MB），避免大图 ImageIO.read() 导致 OOM
+     */
+    private static final long MAX_WEBP_FILE_SIZE = 20L * 1024 * 1024;
+
+    private void webp(HttpServletRequest request, HttpServletResponse response) {
+        Path uriPath = Paths.get(URLDecoder.decode(request.getRequestURI(), StandardCharsets.UTF_8));
+        uriPath = uriPath.subpath(1, uriPath.getNameCount());
+        ImageWriter writer = null;
+        FileCacheImageOutputStream output = null;
+        try {
+            File file = Paths.get(fileProperties.getRootDir(), uriPath.toString()).toFile();
+            if (!file.exists()) {
+                return;
+            }
+            // 防止大文件 ImageIO.read() 导致 OOM
+            if (file.length() > MAX_WEBP_FILE_SIZE) {
+                log.info("跳过 WebP 实时转换，文件过大: {} ({}MB)", file.getName(), file.length() / 1024 / 1024);
+                return;
+            }
+            // 从某处获取图像进行编码
+            BufferedImage image = ImageIO.read(file);
+            if (image == null) {
+                log.warn("无法读取图片: {}", file.getAbsolutePath());
+                return;
+            }
+            // 检查解压后的像素数据大小，防止超大分辨率图片导致 OOM
+            long pixelBytes = (long) image.getWidth() * image.getHeight() * 4;
+            if (pixelBytes > 200L * 1024 * 1024) {
+                log.info("跳过 WebP 实时转换，图片分辨率过大: {}x{} ({})", image.getWidth(), image.getHeight(), file.getName());
+                image.flush();
+                return;
+            }
+
+            // 获取一个WebP ImageWriter实例
+            writer = ImageIO.getImageWritersByMIMEType("image/webp").next();
+            responseHeader(response, file.getName() + ".webp", new byte[1]);
+            // 配置编码参数
+            WebPWriteParam writeParam = new WebPWriteParam(writer.getLocale());
+            writeParam.setCompressionMode(ImageWriteParam.MODE_DEFAULT);
+            // 在ImageWriter上配置输出
+            output = new FileCacheImageOutputStream(response.getOutputStream(), null);
+            writer.setOutput(output);
+            // 编码
+            writer.write(null, new IIOImage(image, null, null), writeParam);
+            image.flush();
+        } catch (IOException e) {
+            log.error(e.getMessage(), e);
+        } finally {
+            if (output != null) {
+                try {
+                    output.close();
+                } catch (IOException e) {
+                    log.error("关闭FileCacheImageOutputStream失败", e);
+                }
+            }
+            if (writer != null) {
+                writer.dispose();
+            }
+        }
+    }
+
+    private void thumbnail(HttpServletRequest request, HttpServletResponse response) {
+        Path uriPath = Paths.get(URLDecoder.decode(request.getRequestURI(), StandardCharsets.UTF_8));
+        if (uriPath.getNameCount() < MIN_COUNT) {
+            return;
+        }
+        FileDocument fileDocument = getFileDocument(uriPath);
+        Path relativePath = uriPath.subpath(1, uriPath.getNameCount());
+        if (fileDocument != null) {
+            if (fileDocument.getContent() == null) {
+                File file = Paths.get(fileProperties.getRootDir(), relativePath.toString()).toFile();
+                if (file.exists()) {
+                    // 生成缩略图而非读取整个原始文件，避免大文件导致OOM
+                    try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                        Thumbnails.of(file).size(256, 256).toOutputStream(out);
+                        fileDocument.setContent(out.toByteArray());
+                    } catch (Exception e) {
+                        log.warn("生成缩略图失败: {}, 回退读取原文件", file.getAbsolutePath());
+                        // 限制最大读取大小(10MB)避免OOM
+                        if (file.length() <= 10 * 1024 * 1024) {
+                            fileDocument.setContent(FileUtil.readBytes(file));
+                        }
+                    }
+                }
+            }
+            responseWritImage(response, fileDocument.getName(), fileDocument.getContent());
+        }
+    }
+
+    private FileDocument getFileDocument(Path uriPath) {
+        String username = uriPath.getName(1).toString();
+        String path = File.separator;
+        if (uriPath.getNameCount() > MIN_COUNT + 1) {
+            path = File.separator + uriPath.subpath(MIN_COUNT, uriPath.getNameCount()).getParent().toString() + File.separator;
+        }
+        String name = uriPath.getFileName().toString();
+        return fileService.getFileDocumentByPathAndName(path, name, username);
+    }
+
+    private void handleCrop(HttpServletRequest request, HttpServletResponse response) {
+        Path uriPath = Paths.get(URLDecoder.decode(request.getRequestURI(), StandardCharsets.UTF_8));
+        uriPath = uriPath.subpath(1, uriPath.getNameCount());
+        File file = Paths.get(fileProperties.getRootDir(), uriPath.toString()).toFile();
+        String q = request.getParameter("q");
+        String w = request.getParameter("w");
+        String h = request.getParameter("h");
+        byte[] img = imageCrop(file, q, w, h);
+        if (img.length > 0) {
+            responseWritImage(response, file.getName(), img);
+        }
+    }
+
+    private void responseWritImage(HttpServletResponse response, String fileName, byte[] img) {
+        responseHeader(response, fileName, img);
+        try (ServletOutputStream outputStream = response.getOutputStream()) {
+            outputStream.write(img);
+        } catch (IOException e) {
+            log.error(e.getMessage(), e);
+        }
+    }
+
+    private void responseHeader(HttpServletResponse response, String fileName, byte[] img) {
+        if (!CharSequenceUtil.isBlank(fileName)) {
+            response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "fileName=" + ContentDisposition.builder("attachment")
+                    .filename(UriUtils.encode(fileName, StandardCharsets.UTF_8)));
+            response.setHeader(HttpHeaders.CONTENT_TYPE, FileContentTypeUtils.getContentType(FileUtil.extName(fileName)));
+        }
+        if (img != null) {
+            response.setHeader(HttpHeaders.CONTENT_LENGTH, String.valueOf(img.length));
+        }
+        response.setHeader(HttpHeaders.CONNECTION, "close");
+        response.setHeader(HttpHeaders.CONTENT_ENCODING, "utf-8");
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "max-age=2592000");
+    }
+
+    /**
+     * 剪裁图片
+     *
+     * @param srcFile 源文件
+     * @param q       剪裁后的质量
+     * @param w       剪裁后的宽度
+     * @param h       剪裁后的高度
+     * @return 剪裁后的文件
+     */
+    public static byte[] imageCrop(File srcFile, String q, String w, String h) {
+        try {
+            // 只使用FastImageInfo获取图片尺寸，避免将整个图片读入内存两次
+            FastImageInfo imageInfo = new FastImageInfo(srcFile);
+            int srcWidth = imageInfo.getWidth();
+            int srcHeight = imageInfo.getHeight();
+            if (srcWidth <= 0 || srcHeight <= 0) {
+                return new byte[0];
+            }
+
+            Thumbnails.Builder<? extends File> thumbnail = Thumbnails.of(srcFile);
+            double quality = Convert.toDouble(q, 0.8);
+            if (quality >= 0 && quality <= 1) {
+                thumbnail.outputQuality(quality);
+            }
+            int width = Convert.toInt(w, -1);
+            int height = Convert.toInt(h, -1);
+            if (width > 0 && srcWidth > width) {
+                if (height <= 0 || srcHeight <= height) {
+                    height = (int) (width / (double) srcWidth * srcHeight);
+                    height = height == 0 ? width : height;
+                }
+                thumbnail.size(width, height);
+            } else {
+                //宽高均小，指定原大小
+                thumbnail.size(srcWidth, srcHeight);
+            }
+            try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                thumbnail.toOutputStream(out);
+                return out.toByteArray();
+            }
+        } catch (UnsupportedFormatException e) {
+            log.warn(e.getMessage(), e);
+        } catch (IOException e) {
+            log.error(e.getMessage(), e);
+        }
+        return new byte[0];
+    }
+
+}

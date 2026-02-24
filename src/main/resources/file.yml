@@ -1,0 +1,42 @@
+file:
+  # 文件存储根目录 文件监控目录
+  rootDir: /Users/huangjun/Desktop/jmal/rootpath
+  # markdown默认存储的位置
+  documentDir: /Document/
+  # markdown里图片存储的位置
+  documentImgDir: /Image/Document/
+  # 断点续传的临时文件目录名称 位于rootDir下,文件监控扫描忽略的目录
+  chunkFileDir: ugyuvgbhnouvghjbnk
+
+  # 共享空间目录名称 位于rootDir下,文件监控目录
+  togetherFileDir: together
+  # 机械设计资料图库目录名称 位于rootDir下,文件监控目录
+  designerFileDir: designer
+  # 设备图库目录名称 位于rootDir下,文件监控目录
+  machineFileDir: machine
+  # 设备安装图库目录名称 位于rootDir下,文件监控目录
+  installFileDir: install
+  # 设备控制程序库目录名称 位于rootDir下,文件监控目录
+  controlFileDir: control
+  # 设备电路图库目录名称 位于rootDir下,文件监控目录
+  electricFileDir: electric
+  # 共享文件夹试用库目录名称 位于rootDir下,文件监控目录
+  sampleFileDir: sample
+
+  # 视频转码后的缓存目录, 位于 ${chunkFileDir}/${username}/${videoTranscodeCache}
+  videoTranscodeCache: videoTranscodeCache
+  # 是否开启文件监控, 默认关闭(开启会损耗性能), 开启的好处在于使用webDAV、FTP等修改文件会自动同步, 如果需要用webDAV建议开启
+  monitor: false
+  # 文件监控扫描时间间隔(秒)
+  timeInterval: 3
+  # FTP server 端口号
+  ftpServerPort: 8089
+  # 文本类型
+  simText: [txt,html,htm,asp,jsp,xml,json,properties,md,gitignore,java,py,c,cpp,sql,sh,bat,m,bas,prg,cmd]
+  # 文档类型
+  document: ["pdf", "doc", "docx", "xlsx", "xls", "xl", "md", "ppt", "pptx"]
+  # webDAV协议前缀
+  web-dav-prefix: webDAV
+  # ip2region.xdb path
+  ip2region-db-path: /Users/huangjun/IdeaProjects/jmal/old-server/docker/ip2region.xdb
+

@@ -1,0 +1,37 @@
+package com.jmal.clouddisk.model;
+
+import com.fasterxml.jackson.annotation.JsonFormat;
+import lombok.Data;
+import org.springframework.format.annotation.DateTimeFormat;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+/**
+ * @Description 文件分享模型
+ * @Author jmal
+ * @Date 2020-03-17 16:28
+ */
+@Data
+public class ShareVO {
+    private String shareId;
+    /***
+     * 提取码
+     */
+    private String extractionCode;
+
+    private Boolean isPrivacy;
+
+    private String userId;
+
+    private String fileName;
+
+    private Boolean isFolder;
+    private String contentType;
+    @JsonFormat(shape=JsonFormat.Shape.STRING, pattern="yyyy-MM-dd HH:mm")
+    @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm")
+    private LocalDateTime expireDate;
+
+    private List<OperationPermission> operationPermissionList;
+
+}

@@ -1,0 +1,105 @@
+<div xmlns:th="http://www.thymeleaf.org">
+<div id="body">
+    <div class="article-header">
+        <div class="article-background" th:style="${query.background !=null ? 'background-image: url('+ query.background +')':'background-image: url('+ setting.backgroundSite +')'}"></div>
+        <div class="inner">
+            <div class="blog-title"><span id="article-title" th:text="${query.name}"></span><span class="typed-cursor">_</span></div>
+            <div class="blog-description font-mono">
+                <span th:text="'共计'+${articlesData.getTotal()}+'篇文章'"></span>
+            </div>
+        </div>
+    </div>
+    <div th:insert="~{component/articles-list.html}"></div>
+</div>
+    <div th:replace="~{component/common-js.html}"></div>
+<script th:inline="javascript">
+    $(function(){
+        if(window.innerWidth <= 768){
+            $(".rainbow-page").hide()
+        }
+
+        $(".back-top").click(function(){
+            $('html, body').animate({
+                scrollTop: 0
+            }, 400)
+        });
+
+        let showBackTop = function () {
+            if(document.documentElement.scrollTop > 300){
+                $('.back-top').fadeIn(500)
+            } else {
+                $('.back-top').fadeOut(500)
+            }
+        }
+        showBackTop()
+
+        function fn (direction) {
+            // 判断是上滑显示,下滑隐藏
+            const top = $('#top')
+            const toogleNav = $('#toggle-nav')
+
+            const body = document.getElementById("body")
+
+            if(direction === 'down'){
+                top.removeClass('animateIn')
+                top.addClass('animateOut')
+                toogleNav.removeClass('animateRight')
+                toogleNav.addClass('animateLeft')
+                if(body.style.transform.length > 0) {
+                    document.getElementById("sidebar-nav").style.transform = ''
+                    body.style.transform = ''
+                    document.getElementById("toggle-nav").style.transform = ''
+                }
+            }
+            if(direction === 'up'){
+                top.removeClass('animateOut')
+                top.addClass('animateIn')
+                toogleNav.removeClass('animateLeft')
+                toogleNav.addClass('animateRight')
+            }
+        }
+
+        let beforeScrollTop = document.documentElement.scrollTop;
+        $(window).on("scroll",function (event) {
+            showBackTop()
+            // 判断是上滑还是下滑
+            let afterScrollTop = document.documentElement.scrollTop
+            let delta = afterScrollTop - beforeScrollTop
+            beforeScrollTop = afterScrollTop
+            let scrollTop = $(this).scrollTop()
+            let scrollHeight = $(document).height()
+            let windowHeight = $(this).height()
+            if (scrollTop + windowHeight > scrollHeight - 10) {  //滚动到底部执行事件
+                fn('bottom')
+                return
+            }
+            if (afterScrollTop < 10 || afterScrollTop > $(document.body).height - 10) {
+                fn('up')
+            } else {
+                if (Math.abs(delta) < 10) {
+                    return false
+                }
+                fn(delta > 0 ? "down" : "up")
+            }
+        })
+        let main = $('.articles_l_main')
+        /***
+         * 改变返回顶部按钮位置
+         */
+        function setBackTopPosition(){
+            if(window.innerWidth > 1000){
+                $('.back-top').css('left', main.width() + main.offset().left + 15)
+            } else if (window.innerWidth > 768 && window.innerWidth < 1000){
+                $('.back-top').css('left', main.width() + main.offset().left - 30)
+            } else {
+                $('.back-top').css('left', '')
+            }
+        }
+        setBackTopPosition()
+        $(window).on("resize", function (){
+            setBackTopPosition()
+        })
+    });
+</script>
+</div>
+

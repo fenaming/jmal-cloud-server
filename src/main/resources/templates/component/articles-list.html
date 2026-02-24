@@ -1,0 +1,113 @@
+<div class="l_body" xmlns:th="http://www.thymeleaf.org">
+    <div class="articles_l_main">
+        <section class="post-list">
+            <div th:each="article : ${articlesData.getData()}" class="post-wrapper">
+                <article  class="post white-box shadow reveal">
+                    <section class="meta">
+                        <div class="meta" id="header-meta">
+                            <h2 class="title">
+                                <a th:href="'/s/'+${article.slug == null ? article.id:article.slug}" th:text="${article.name}"></a>
+                            </h2>
+                            <div class="new-meta-box">
+                                <div class="new-meta-item author">
+                                    <a th:href="'/author/'+${article.username}" rel="nofollow">
+                                        <img th:src="'/s/view/thumbnail?id='+${article.avatar}">
+                                        <p th:text="${article.username}"></p>
+                                    </a>
+                                </div>
+                                <div class="new-meta-item date">
+                                    <div class="not-link">
+                                        <svg class="icon" aria-hidden="true">
+                                            <use xlink:href="#icon-fabu"></use>
+                                        </svg>
+                                        <p th:text="'发布于 '+${article.uploadTime()}"></p>
+                                    </div>
+                                </div>
+                                <div class="new-meta-item categoryDO" th:if="${article.categories != null && article.categories.size() > 0}">
+                                    <a class="link">
+                                        <svg class="icon" aria-hidden="true">
+                                            <use xlink:href="#icon-fenlei"></use>
+                                        </svg>
+                                    </a>
+                                    <div class="flex-text">
+                                           <span class="flex-text" th:each="categoryDO,categoryStat : ${article.categories}">
+                                            <span th:text="${categoryStat.index > 0?' , ':''}"></span>
+                                               <a th:href="'/categories/'+${categoryDO.slug}" th:text="${categoryDO.name}"></a>
+                                            </span>
+                                    </div>
+                                </div>
+                                <div class="new-meta-item tag" th:if="${article.tags != null && article.tags.size() > 0}">
+                                    <a class="link">
+                                        <svg class="icon" aria-hidden="true">
+                                            <use xlink:href="#icon-tag"></use>
+                                        </svg>
+                                    </a>
+                                    <div class="flex-text">
+                                           <span class="flex-text" th:each="tag,tagStat : ${article.tags}">
+                                            <span th:text="${tagStat.index > 0?' , ':''}"></span>
+                                               <a th:href="'/tags/'+${tag.slug}" th:text="${tag.name}"></a>
+                                            </span>
+                                    </div>
+                                </div>
+                            </div>
+                            <hr>
+                        </div>
+                    </section>
+                    <section class="article typo">
+                        <a th:href="'/s/'+${article.slug == null ? article.id:article.slug}">
+                            <div class="article-entry" itemprop="articleBody">
+                                <p>
+                                    <img class="blog-background articles-list" style="display: none"
+                                         th:src="${article.cover != null ? article.cover : setting.backgroundSite}"
+                                         th:onload='loadArticlesImage(this,document.getElementById([[${article.id}]]))'/>
+                                    <img th:id="${article.id}" class="blog-background articles-list loading"
+                                         th:src="${article.cover != null ? article.cover+'?o=thumbnail' : setting.backgroundSite+'?o=thumbnail'}"/>
+                                </p>
+                            </div>
+                        </a>
+                    </section>
+                </article>
+            </div>
+        </section>
+        <div id="laypage">
+            <div class="layui-box layui-laypage layui-laypage-default" id="layui-laypage-1">
+                <i th:if="${articlesData.getTotalPage() > 1}">
+                    <i th:if="${articlesData.getCurrentPage() == 1}">
+                        <a data-pjax th:class="'layui-laypage-prev'+ ${articlesData.isFirst()?' layui-disabled':''}" >上一页</a>
+                    </i>
+                    <i th:if="${articlesData.getCurrentPage() > 1}">
+                        <a data-pjax th:href="'?page=' + ${articlesData.getCurrentPage()-1}" th:class="'layui-laypage-prev'+ ${articlesData.isFirst()?' layui-disabled':''}" >上一页</a>
+                    </i>
+
+                    <i class="rainbow-page">
+                        <i th:if="${articlesData.getCurrentPage() >= 5}">
+                            <a data-pjax href="/articles" class="layui-laypage-first" title="首页">1</a>
+                            <span class="layui-laypage-spr">…</span>
+                        </i>
+                        <i th:each="page : ${articlesData.rainbow()}">
+                            <span th:if="${articlesData.getCurrentPage() == page}" class="layui-laypage-curr">
+                                <em class="layui-laypage-em" style="background-color:#409EFF;"></em><em th:text="${page}"></em>
+                            </span>
+                            <a data-pjax th:if="${articlesData.getCurrentPage() != page}" th:href="'?page=' + ${page}" class="layui-laypage-prev" th:text="${page}"></a>
+                        </i>
+                        <i th:if="${articlesData.getTotalPage()-articlesData.getCurrentPage() >= 4}">
+                            <span class="layui-laypage-spr">…</span>
+                            <a data-pjax th:href="'?page=' + ${articlesData.getTotalPage()}" class="layui-laypage-last" title="尾页" th:text="${articlesData.getTotalPage()}"></a>
+                        </i>
+                    </i>
+                    <i th:if="${articlesData.getTotalPage() == articlesData.getCurrentPage()}">
+                        <a data-pjax th:class="'layui-laypage-next'+ ${articlesData.isLast()?' layui-disabled':''}">下一页</a>
+                    </i>
+                    <i th:if="${articlesData.getTotalPage() > articlesData.getCurrentPage()}">
+                        <a data-pjax th:href="'?page=' + ${articlesData.getCurrentPage()+1}" th:class="'layui-laypage-next'+ ${articlesData.isLast()?' layui-disabled':''}">下一页</a>
+                    </i>
+                </i>
+            </div>
+        </div>
+        <div class="back-top" style="display: none">
+            <svg class="icon" aria-hidden="true">
+                <use xlink:href="#icon-Up"></use>
+            </svg>
+        </div>
+    </div>
+</div>

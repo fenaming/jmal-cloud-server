@@ -1,0 +1,107 @@
+<div xmlns:th="http://www.thymeleaf.org">
+    <link rel="stylesheet" type="text/css" href="/articles/css/independent.css">
+    <style>
+        .tag-cloud {
+            padding: 1rem 5%;
+        }
+        .text-center {
+            text-align: center!important;
+        }
+        .tag-cloud a {
+            display: inline-block;
+            padding: 0.5rem;
+        }
+        .tag-cloud a:hover {
+            color: #1890ff;
+        }
+        .article-body a:hover:after {
+            width: 0;
+        }
+        .article-body a:after {
+            width: 0;
+            content: "";
+        }
+    </style>
+    <div id="body">
+        <div class="article-header">
+            <div class="article-background"></div>
+            <div class="lazyload-container" th:style="${setting.tagBackground !=null ? 'background-image: url('+setting.tagBackground+'?o=thumbnail)': 'background-image: url('+ setting.backgroundSite+'?o=thumbnail)'}">
+                <img style="display: none"
+                     th:src="${setting.tagBackground !=null ? setting.tagBackground+'?o=thumbnail' : setting.archiveBackground+'?o=thumbnail'}"
+                     th:data-src="${setting.tagBackground !=null ? setting.tagBackground : setting.archiveBackground}"
+                     onload="javascript:loadBanner(this,document.querySelector('.article-header'))"
+                />
+            </div>
+            <div class="inner">
+                <div class="blog-title"><span id="article-title">标签</span><span class="typed-cursor">_</span></div>
+            </div>
+        </div>
+        <div class="body-wrapper">
+            <el-main id="main_body" class="l_main article_l_main">
+                <div class="content article-body" style="padding: 0;">
+                    <div class="text-center tag-cloud">
+                        <a th:title="${tag.name} + ' - 文章数: ' + ${tag.articleNum}" th:href="'/tags/' + ${tag.slug}" th:style="'font-size: ' + ${tag.fontSize} + 'px; color: ' + ${tag.color}" th:each="tag : ${tags}" th:text="${tag.name}"></a>
+                    </div>
+                </div>
+            </el-main>
+        </div>
+    </div>
+    <div th:replace="~{component/common-js.html}"></div>
+    <script th:inline="javascript">
+        $(function() {
+            function fn (direction) {
+                // 判断是上滑显示,下滑隐藏
+                const top = $('#top')
+                const toogleNav = $('#toggle-nav')
+
+                const body = document.getElementById("body")
+
+                if(direction === 'down'){
+                    if(top.hasClass('animateIn')){
+                        top.removeClass('animateIn')
+                        top.addClass('animateOut')
+                        toogleNav.removeClass('animateRight')
+                        toogleNav.addClass('animateLeft')
+                        if(body.style.transform.length > 0) {
+                            document.getElementById("sidebar-nav").style.transform = ''
+                            body.style.transform = ''
+                            document.getElementById("toggle-nav").style.transform = ''
+                        }
+                    }
+                }
+                if(direction === 'up'){
+                    if(top.hasClass('animateOut')){
+                        top.removeClass('animateOut')
+                        top.addClass('animateIn')
+                        toogleNav.removeClass('animateLeft')
+                        toogleNav.addClass('animateRight')
+                    }
+                }
+            }
+
+            let beforeScrollTop = document.documentElement.scrollTop;
+            $(window).on("scroll",function () {
+                // 判断是上滑还是下滑
+                let afterScrollTop = document.documentElement.scrollTop
+                let delta = afterScrollTop - beforeScrollTop
+                beforeScrollTop = afterScrollTop
+                let scrollTop = $(this).scrollTop()
+                let scrollHeight = $(document).height()
+                let windowHeight = $(this).height()
+                if (scrollTop + windowHeight > scrollHeight - 10) {  //滚动到底部执行事件
+                    fn('bottom')
+                    return
+                }
+                if (afterScrollTop < 10 || afterScrollTop > $(document.body).height - 10) {
+                    fn('up')
+                } else {
+                    if (Math.abs(delta) < 10) {
+                        return false
+                    }
+                    fn(delta > 0 ? "down" : "up")
+                }
+            })
+        })
+    </script>
+</div>
+

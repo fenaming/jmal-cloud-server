@@ -1,0 +1,142 @@
+package com.jmal.clouddisk.exception;
+
+/**
+ * @Description 异常枚举
+ * @Date 2019-08-16 14:20
+ * @author jmal
+ */
+public enum ExceptionType {
+
+
+    /***
+     * 警告
+     */
+    WARNING(-2, ""),
+    /***
+     * 其他异常
+     */
+    SYSTEM_ERROR(-1, "其他异常"),
+    /***
+     * 成功
+     */
+    SYSTEM_SUCCESS(0, "true"),
+    /***
+     * 缺少参数
+     */
+    MISSING_PARAMETERS(1, "缺少参数"),
+    /***
+     * 时间格式不正确
+     */
+    INCORRECT_DATE(2, "时间格式不正确"),
+    /***
+     * 缺少Header
+     */
+    MISSING_HEADERS(3, "缺少Header"),
+    /***
+     * 该资源已存在
+     */
+    EXISTING_RESOURCES(4, "该资源已存在"),
+    /***
+     * 未登录或登录超时
+     */
+    LOGIN_EXCEPTION(5, "未登录或登录超时"),
+    /***
+     * 分享码错误
+     */
+    SHARE_CODE_EXCEPTION(6, "分享码错误"),
+    /***
+     * 未验证分享码
+     */
+    SHARE_CODE_VALID(21, "未验证分享码"),
+    /***
+     * 文件不存在
+     */
+    FILE_NOT_FIND(7, "文件不存在"),
+
+    /**
+     * 没有权限
+     */
+    PERMISSION_DENIED(8, "没有权限"),
+
+    /**
+     * 自定义异常
+     */
+    CUSTOM_EXCEPTION(9, "自定义异常"),
+
+    /**
+     * 参数值不对
+     */
+    PARAMETERS_VALUE(10, "参数值不对"),
+
+    /**
+     * 参数值不对
+     */
+    OFFLINE(11, "离线"),
+
+    /**
+     * 用户不存在
+     */
+    USER_NOT_FIND(12, "用户不存在"),
+
+    /***
+     * 目录不存在
+     */
+    DIR_NOT_FIND(13, "目录不存在"),
+
+    /***
+     * 解压失败
+     */
+    FAIL_DECOMPRESS(14, "解压失败"),
+
+    /***
+     * 无法识别的文件
+     */
+    UNRECOGNIZED_FILE(15, "无法识别的文件"),
+
+    /***
+     * 合并文件失败
+     */
+    FAIL_MERGE_FILE(16, "合并文件失败"),
+
+    /***
+     * 删除文件失败
+     */
+    FAIL_DELETE_FILE(17, "删除文件失败"),
+
+    /***
+     * 上传文件失败
+     */
+    FAIL_UPLOAD_FILE(18, "上传文件失败"),
+
+    /***
+     * 禁止访问
+     */
+    ACCESS_FORBIDDEN(19, "禁止访问"),
+
+    /***
+     * 空间已满
+     */
+    SPACE_FULL(20, "空间已满"),
+
+    /***
+     * 资源被锁定
+     */
+    LOCKED_RESOURCES(21, "该资源被锁定");
+
+
+    public int getCode() {
+        return code;
+    }
+
+    public String getMsg() {
+        return msg;
+    }
+
+    private final int code;
+    private final String msg;
+
+    ExceptionType(int code, String msg) {
+        this.code = code;
+        this.msg = msg;
+    }
+}

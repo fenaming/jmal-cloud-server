@@ -1,0 +1,141 @@
+<div xmlns:th="http://www.thymeleaf.org">
+<link rel="stylesheet" type="text/css" href="/articles/css/independent.css">
+<div id="body">
+    <div class="article-header">
+        <div class="article-background"></div>
+        <div class="lazyload-container" th:style="${setting.archiveBackground !=null ? 'background-image: url('+setting.archiveBackground+'?o=thumbnail)': 'background-image: url('+ setting.backgroundSite+'?o=thumbnail)'}">
+            <img style="display: none"
+                 th:src="${setting.archiveBackground !=null ? setting.archiveBackground+'?o=thumbnail' : setting.archiveBackground+'?o=thumbnail'}"
+                 th:data-src="${setting.archiveBackground !=null ? setting.archiveBackground : setting.archiveBackground}"
+                 onload="javascript:loadBanner(this,document.querySelector('.article-header'))"
+            />
+        </div>
+        <div class="inner">
+            <div class="blog-title"><span id="article-title">归档</span><span class="typed-cursor">_</span></div>
+            <div class="blog-description font-mono">
+                <span></span>
+            </div>
+        </div>
+    </div>
+    <div class="body-wrapper">
+        <el-main id="main_body" class="l_main article_l_main">
+            <div class="archives article-body">
+                <ul class="layui-timeline">
+                    <li class="layui-timeline-item" th:each="articles : ${articlesData.getData()}">
+                        <i class="layui-icon layui-timeline-axis">
+                            <svg class="icon" aria-hidden="true">
+                                <use xlink:href="#icon-yuandian"></use>
+                            </svg>
+                        </i>
+                        <div class="layui-timeline-content layui-text">
+                            <h3 class="layui-timeline-title" th:text="${articles.get(0).date()}"></h3>
+                            <div class="brick" th:each="article : ${articles}">
+                                <a th:href="'/s/'+${article.slug == null ? article.id:article.slug}">
+                                    <span class="time" th:text="${article.dateTime()}"></span>
+                                    <span th:text="${article.name}"> </span>
+                                </a>
+                            </div>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+            <div class="back-top" style="display: none">
+                <svg class="icon" aria-hidden="true">
+                    <use xlink:href="#icon-Up"></use>
+                </svg>
+            </div>
+        </el-main>
+    </div>
+</div>
+    <div th:replace="~{component/common-js.html}"></div>
+<script th:inline="javascript">
+    $(function(){
+        if(window.innerWidth <= 768){
+            $(".rainbow-page").hide()
+        }
+
+        $(".back-top").click(function(){
+            $('html, body').animate({
+                scrollTop: 0
+            }, 400)
+        });
+
+        let showBackTop = function () {
+            if(document.documentElement.scrollTop > 300){
+                $('.back-top').fadeIn(500)
+            } else {
+                $('.back-top').fadeOut(500)
+            }
+        }
+        showBackTop()
+
+        function fn (direction) {
+            // 判断是上滑显示,下滑隐藏
+            const top = $('#top')
+            const toogleNav = $('#toggle-nav')
+
+            const body = document.getElementById("body")
+
+            if(direction === 'down'){
+                top.removeClass('animateIn')
+                top.addClass('animateOut')
+                toogleNav.removeClass('animateRight')
+                toogleNav.addClass('animateLeft')
+                if(body.style.transform.length > 0) {
+                    document.getElementById("sidebar-nav").style.transform = ''
+                    body.style.transform = ''
+                    document.getElementById("toggle-nav").style.transform = ''
+                }
+            }
+            if(direction === 'up'){
+                top.removeClass('animateOut')
+                top.addClass('animateIn')
+                toogleNav.removeClass('animateLeft')
+                toogleNav.addClass('animateRight')
+            }
+        }
+
+        let beforeScrollTop = document.documentElement.scrollTop;
+        $(window).on("scroll",function (event) {
+            showBackTop()
+            // 判断是上滑还是下滑
+            let afterScrollTop = document.documentElement.scrollTop
+            let delta = afterScrollTop - beforeScrollTop
+            beforeScrollTop = afterScrollTop
+            let scrollTop = $(this).scrollTop()
+            let scrollHeight = $(document).height()
+            let windowHeight = $(this).height()
+            if (scrollTop + windowHeight > scrollHeight - 10) {  //滚动到底部执行事件
+                fn('bottom')
+                return
+            }
+            if (afterScrollTop < 10 || afterScrollTop > $(document.body).height - 10) {
+                fn('up')
+            } else {
+                if (Math.abs(delta) < 10) {
+                    return false
+                }
+                fn(delta > 0 ? "down" : "up")
+            }
+        })
+        let main = $('#main_body')
+        /***
+         * 改变返回顶部按钮位置
+         */
+        function setBackTopPosition(){
+            if(window.innerWidth > 1000){
+                $('.back-top').css('left', main.width() + main.offset().left + 25)
+            } else if (window.innerWidth > 768 && window.innerWidth < 1000){
+                $('.back-top').css('left', main.width() + main.offset().left - 30)
+            } else {
+                $('.back-top').css('left', '')
+            }
+        }
+        setBackTopPosition()
+        $(window).on("resize", function (){
+            setBackTopPosition()
+        })
+    });
+</script>
+</div>
+

@@ -1,0 +1,587 @@
+package com.jmal.clouddisk.service.video;
+
+import cn.hutool.core.io.FileUtil;
+import cn.hutool.core.lang.Console;
+import cn.hutool.core.thread.ThreadUtil;
+import cn.hutool.core.util.BooleanUtil;
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONArray;
+import com.alibaba.fastjson2.JSONObject;
+import com.jmal.clouddisk.config.FileProperties;
+import com.jmal.clouddisk.model.FileDocument;
+import com.jmal.clouddisk.oss.IOssService;
+import com.jmal.clouddisk.oss.OssConfigService;
+import com.jmal.clouddisk.oss.web.WebOssService;
+import com.jmal.clouddisk.service.Constants;
+import com.jmal.clouddisk.service.IUserService;
+import com.jmal.clouddisk.service.impl.CommonFileService;
+import com.jmal.clouddisk.util.CaffeineUtil;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import jakarta.annotation.Resource;
+import lombok.Getter;
+import lombok.Setter;
+import lombok.extern.slf4j.Slf4j;
+import org.codehaus.plexus.util.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
+import org.springframework.stereotype.Service;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.URL;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+import static com.jmal.clouddisk.service.IUserService.IS_TOGETHER;
+import static com.jmal.clouddisk.service.IUserService.SPACE_FLAG;
+
+@Service
+@Lazy
+@Slf4j
+public class VideoProcessService {
+
+    @Autowired
+    private FileProperties fileProperties;
+
+    @Autowired
+    private IUserService userService;
+
+    @Autowired
+    private CommonFileService commonFileService;
+
+    @Resource
+    MongoTemplate mongoTemplate;
+
+    private ExecutorService executorService;
+
+
+    /**
+     * h5播放器支持的视频格式
+     */
+    private final String[] WEB_SUPPORTED_FORMATS = {"mp4", "webm", "ogg", "flv", "hls", "mkv"};
+
+    @PostConstruct
+    public void init() {
+        int processors = Runtime.getRuntime().availableProcessors() - 1;
+        if (processors < 1) {
+            processors = 1;
+        }
+        // 使用CallerRunsPolicy，当队列满时由调用者线程执行，避免任务被丢弃
+        executorService = ThreadUtil.newFixedExecutor(processors, 100, "videoTranscoding", true);
+    }
+
+    @PreDestroy
+    public void destroy() {
+        if (executorService != null) {
+            executorService.shutdown();
+            try {
+                if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
+                    executorService.shutdownNow();
+                    log.warn("视频转码线程池未在30秒内终止，已强制关闭");
+                }
+            } catch (InterruptedException e) {
+                executorService.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            log.info("VideoProcessService executorService stopped.");
+        }
+    }
+
+    public void convertToM3U8(String fileId, String username, String relativePath, String fileName, Boolean isTogether, String spaceFlag) {
+        try {
+            executorService.execute(() -> {
+                try {
+                    TimeUnit.SECONDS.sleep(3);
+                    videoToM3U8(fileId, username, relativePath, fileName, isTogether, spaceFlag);
+                } catch (InterruptedException e) {
+                    log.error(e.getMessage(), e);
+                    Thread.currentThread().interrupt();
+                } catch (IOException e) {
+                    log.error(e.getMessage(), e);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            log.warn("视频转码任务队列已满，跳过转码: {}", fileName);
+        }
+    }
+
+    public void deleteVideoCacheByIds(String username, List<String> fileIds, Boolean isTogether, String spaceFlag) {
+        fileIds.forEach(fileId -> deleteVideoCacheById(username, fileId, isTogether, spaceFlag));
+    }
+
+    public void deleteVideoCacheById(String username, String fileId, Boolean isTogether, String spaceFlag) {
+        String videoCacheDir = getVideoCacheDir(username, fileId, isTogether, spaceFlag);
+        if (FileUtil.exist(videoCacheDir)) {
+            FileUtil.del(videoCacheDir);
+        }
+    }
+
+    public void deleteVideoCache(String username, String fileAbsolutePath, Boolean isTogether, String spaceFlag) {
+        // 修复NPE: getFileDocument可能返回null
+        FileDocument fileDocument = commonFileService.getFileDocument(username, fileAbsolutePath, isTogether, spaceFlag);
+        if (fileDocument == null) {
+            return;
+        }
+        String fileId = fileDocument.getId();
+        String videoCacheDir = getVideoCacheDir(username, fileId, isTogether, spaceFlag);
+        if (FileUtil.exist(videoCacheDir)) {
+            FileUtil.del(videoCacheDir);
+        }
+    }
+
+    public String getVideoCover(String fileId, String username, String relativePath, String fileName, Boolean isTogether, String spaceFlag) {
+        if (hasNoFFmpeg()) {
+            return null;
+        }
+        Path prePath = null;
+        if (Boolean.TRUE.equals(isTogether)){
+            prePath = Paths.get(fileProperties.getTogetherFileDir(), relativePath, fileName);
+        }else if (StringUtils.isNotEmpty(spaceFlag)){
+            prePath = Paths.get(spaceFlag, relativePath, fileName);
+        }else{
+            prePath = Paths.get(username, relativePath, fileName);
+        }
+        String ossPath = CaffeineUtil.getOssPath(prePath);
+
+
+        Path fileAbsolutePath = null;
+        if (Boolean.TRUE.equals(isTogether)){
+            fileAbsolutePath = Paths.get(fileProperties.getRootDir(), fileProperties.getTogetherFileDir(), relativePath, fileName);
+        }else if (StringUtils.isNotEmpty(spaceFlag)){
+            fileAbsolutePath = Paths.get(fileProperties.getRootDir(), spaceFlag, relativePath, fileName);
+        }else{
+            fileAbsolutePath = Paths.get(fileProperties.getRootDir(), username, relativePath, fileName);
+        }
+        String videoCacheDir = getVideoCacheDir(username, "", isTogether, spaceFlag);
+        // 判断fileId是否为path, 如果为path则取最后一个
+        if (fileId.contains("/")) {
+            fileId = fileId.substring(fileId.lastIndexOf("/") + 1);
+        }
+        String outputPath = Paths.get(videoCacheDir, fileId + ".png").toString();
+        if (FileUtil.exist(outputPath)) {
+            return outputPath;
+        }
+        Process process = null;
+        try {
+            String videoPath = fileAbsolutePath.toString();
+            if (ossPath != null) {
+                IOssService ossService = OssConfigService.getOssStorageService(ossPath);
+                String objectName = WebOssService.getObjectName(prePath, ossPath, false);
+                URL url = ossService.getPresignedObjectUrl(objectName, 60);
+                if (url != null) {
+                    videoPath = url.toString();
+                }
+            }
+            ProcessBuilder processBuilder = getVideoCoverProcessBuilder(videoPath, outputPath);
+            process = processBuilder.start();
+            // 消费输出流，避免缓冲区阻塞
+            try (InputStream is = process.getInputStream();
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(is))) {
+                while (reader.readLine() != null) {
+                    // 消费输出
+                }
+            }
+            int exitCode = process.waitFor();
+            if (exitCode == 0) {
+                if (FileUtil.exist(outputPath)) {
+                    return outputPath;
+                }
+            } else {
+                printErrorInfo(processBuilder);
+            }
+            return null;
+        } catch (InterruptedException e) {
+            log.error(e.getMessage(), e);
+            Thread.currentThread().interrupt();
+        } catch (IOException e) {
+            log.error(e.getMessage(), e);
+        } finally {
+            if (process != null) {
+                process.destroyForcibly();
+            }
+        }
+        return null;
+    }
+
+    private static ProcessBuilder getVideoCoverProcessBuilder(String videoPath, String outputPath) {
+        ProcessBuilder processBuilder = new ProcessBuilder(
+                Constants.FFMPEG,
+                "-i", videoPath,
+                "-vf", "thumbnail,scale='min(320,iw)':-1",
+                "-frames:v", "1",
+                outputPath
+        );
+        processBuilder.redirectErrorStream(true);
+        return processBuilder;
+    }
+
+    /**
+     * 获取视频文件缓存目录
+     *
+     * @param username username
+     * @param fileId  fileId
+     * @return 视频文件缓存目录
+     */
+    private String getVideoCacheDir(String username, String fileId) {
+        // 视频文件缓存目录
+        String videoCacheDir = Paths.get(fileProperties.getRootDir(), fileProperties.getChunkFileDir(), username, fileProperties.getVideoTranscodeCache(), fileId).toString();
+        if (!FileUtil.exist(videoCacheDir)) {
+            FileUtil.mkdir(videoCacheDir);
+        }
+        return videoCacheDir;
+    }
+
+    /**
+     * 获取视频文件缓存目录
+     *
+     * @param username username
+     * @param fileId  fileId
+     * @return 视频文件缓存目录
+     */
+    private String getVideoCacheDir(String username, String fileId, Boolean isTogether, String spaceFlag) {
+        // 视频文件缓存目录
+        String videoCacheDir = null;
+        if (Boolean.TRUE.equals(isTogether)){
+            videoCacheDir = Paths.get(fileProperties.getRootDir(), fileProperties.getChunkFileDir(), fileProperties.getTogetherFileDir(), fileProperties.getVideoTranscodeCache(), fileId).toString();
+        }else if (StringUtils.isNotEmpty(spaceFlag)){
+            videoCacheDir = Paths.get(fileProperties.getRootDir(), fileProperties.getChunkFileDir(), spaceFlag, fileProperties.getVideoTranscodeCache(), fileId).toString();
+        }else {
+            videoCacheDir = Paths.get(fileProperties.getRootDir(), fileProperties.getChunkFileDir(), username, fileProperties.getVideoTranscodeCache(), fileId).toString();
+        }
+        if (!FileUtil.exist(videoCacheDir)) {
+            FileUtil.mkdir(videoCacheDir);
+        }
+        return videoCacheDir;
+    }
+
+    private void videoToM3U8(String fileId, String username, String relativePath, String fileName, Boolean isTogether, String spaceFlag) throws IOException, InterruptedException {
+
+        Path fileAbsolutePath = null;
+        if (Boolean.TRUE.equals(isTogether)){
+            fileAbsolutePath = Paths.get(fileProperties.getRootDir(), fileProperties.getTogetherFileDir(), relativePath, fileName);
+        }else if (StringUtils.isNotEmpty(spaceFlag)){
+            fileAbsolutePath = Paths.get(fileProperties.getRootDir(), spaceFlag, relativePath, fileName);
+        }else {
+            fileAbsolutePath = Paths.get(fileProperties.getRootDir(), username, relativePath, fileName);
+        }
+        // 视频文件缓存目录
+        String videoCacheDir = getVideoCacheDir(username, fileId, isTogether, spaceFlag);
+        if (hasNoFFmpeg()) {
+            return;
+        }
+        String outputPath = Paths.get(videoCacheDir, fileId + ".m3u8").toString();
+        if (FileUtil.exist(outputPath)) {
+            return;
+        }
+        // 获取原始视频的分辨率和码率信息
+        VideoInfo videoInfo = getVideoInfo(fileAbsolutePath.toString());
+        // 判断是否需要转码
+        if (!needTranscode(videoInfo)) {
+            return;
+        }
+        // 如果视频的码率小于2000kbps，则使用视频的原始码率
+        // 标清视频码率
+        int SD_VIDEO_BITRATE = 2000;
+        int bitrate = SD_VIDEO_BITRATE;
+        if (videoInfo.getBitrate() < SD_VIDEO_BITRATE && videoInfo.getBitrate() > 0) {
+            bitrate = videoInfo.getBitrate();
+        }
+        // 转码前先获取一次视频时长，避免在进度回调中重复启动ffprobe进程
+        double videoDuration = getVideoDuration(fileAbsolutePath.toString());
+
+        ProcessBuilder processBuilder = new ProcessBuilder(
+                Constants.FFMPEG,
+                "-i", fileAbsolutePath.toString(),
+                "-profile:v", "main",
+                "-pix_fmt", "yuv420p",
+                "-level", "4.0",
+                "-start_number", "0",
+                "-hls_time", "10",
+                "-hls_list_size", "0",
+                "-vf", "scale=-2:" + 720,
+                "-b:v", bitrate + "k",
+                "-preset", "medium",
+                "-g", "48",
+                "-sc_threshold", "0",
+                "-f", "hls",
+                "-hls_segment_filename", Paths.get(videoCacheDir, fileId + "-%03d.ts").toString(),
+                outputPath
+        );
+        processBuilder.redirectErrorStream(true);
+        Process process = processBuilder.start();
+        try {
+            boolean pushMessage = false;
+            // 第一个ts文件
+            String firstTS = fileId + "-001.ts";
+            try (InputStream inputStream = process.getInputStream();
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
+                // 读取命令的输出信息
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    // 处理命令的输出信息，例如打印到控制台
+                    if (line.contains("Error")) {
+                        log.error(line);
+                    }
+                    if (line.contains(firstTS)) {
+                        // 开始转码
+                        startConvert(username, relativePath, fileName, fileId, isTogether, spaceFlag);
+                        pushMessage = true;
+                    }
+                    transcodingProgress(fileAbsolutePath, line, videoDuration);
+                }
+            }
+            int exitCode = process.waitFor();
+            if (exitCode == 0) {
+                log.info("转码成功: {}", fileName);
+                if (BooleanUtil.isFalse(pushMessage)) {
+                    startConvert(username, relativePath, fileName, fileId, isTogether, spaceFlag);
+                }
+            } else {
+                printErrorInfo(processBuilder);
+            }
+        } finally {
+            process.destroyForcibly();
+        }
+    }
+
+    /**
+     * 判断是否需要转码
+     * @param videoInfo 视频信息
+     * @return 是否需要转码
+     */
+    private boolean needTranscode(VideoInfo videoInfo) {
+        if (videoInfo.getBitrate() <= 2500 || videoInfo.getHeight() <= 720) {
+            return !isSupportedFormat(videoInfo.getFormat());
+        }
+        return true;
+    }
+
+    /**
+     * 判断视频格式是否为HTML5 Video Player支持的格式
+     * @param format 视频格式
+     * @return 是否支持
+     */
+    private boolean isSupportedFormat(String format) {
+        // HTML5 Video Player支持的视频格式
+        String[] formatList = format.split(",");
+        for (String f : formatList) {
+            for (String supportedFormat : WEB_SUPPORTED_FORMATS) {
+                if (f.trim().equalsIgnoreCase(supportedFormat)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 解析转码进度
+     * @param fileAbsolutePath 视频文件绝对路径
+     * @param line 命令输出信息
+     * @param videoDuration 视频时长(秒)，由调用方预先获取，避免重复启动ffprobe进程
+     */
+    private void transcodingProgress(Path fileAbsolutePath, String line, double videoDuration) {
+        if (videoDuration <= 0) {
+            return;
+        }
+        // 解析转码进度
+        if (line.contains("time=")) {
+            try {
+                if (line.contains(":")) {
+                    String[] parts = line.split("time=")[1].split(" ")[0].split(":");
+                    int hours = Integer.parseInt(parts[0]);
+                    int minutes = Integer.parseInt(parts[1]);
+                    int seconds = Integer.parseInt(parts[2].split("\\.")[0]);
+                    int totalSeconds = hours * 3600 + minutes * 60 + seconds;
+                    // 计算转码进度百分比
+                    double progress = (double) totalSeconds / videoDuration * 100;
+                    log.info("{}, 转码进度: {}%", fileAbsolutePath.getFileName(), String.format("%.2f", progress));
+                }
+            } catch (Exception e) {
+                log.warn(e.getMessage(), e);
+            }
+        }
+    }
+
+    private void startConvert(String username, String relativePath, String fileName, String fileId, Boolean isTogether, String spaceFlag) {
+        Query query = new Query();
+        String userId = userService.getUserIdByUserName(username);
+        if (Boolean.TRUE.equals(isTogether)){
+            // 查询共享文件空间不需要userid筛选
+            query.addCriteria(Criteria.where(IUserService.IS_TOGETHER).is(Boolean.TRUE));
+        }else if (StringUtils.isNotEmpty(spaceFlag)){
+            query.addCriteria(Criteria.where(SPACE_FLAG).is(spaceFlag));
+        }else{
+            query.addCriteria(Criteria.where(IUserService.USER_ID).is(userId));
+            query.addCriteria(Criteria.where(IS_TOGETHER).ne(Boolean.TRUE));
+            query.addCriteria(Criteria.where(SPACE_FLAG).isNull());
+        }
+        query.addCriteria(Criteria.where("path").is(relativePath));
+        query.addCriteria(Criteria.where("name").is(fileName));
+        Update update = new Update();
+
+        String m3u8 = null;
+        if (Boolean.TRUE.equals(isTogether)){
+            m3u8 = Paths.get(fileProperties.getTogetherFileDir(), fileId + ".m3u8").toString();
+        }else if (StringUtils.isNotEmpty(spaceFlag)){
+            m3u8 = Paths.get(spaceFlag, fileId + ".m3u8").toString();
+        }else{
+            m3u8 = Paths.get(username, fileId + ".m3u8").toString();
+        }
+        update.set("m3u8", m3u8);
+        FileDocument fileDocument = mongoTemplate.findOne(query, FileDocument.class);
+        if (fileDocument == null) {
+            return;
+        }
+        mongoTemplate.upsert(query, update, FileDocument.class);
+        fileDocument.setM3u8(m3u8);
+        commonFileService.pushMessage(username, fileDocument, "updateFile");
+    }
+
+    private static void printErrorInfo(ProcessBuilder processBuilder) {
+        log.error("ffmpeg 执行失败");
+        processBuilder.command().forEach(command -> Console.log(command + " \\"));
+    }
+
+    /**
+     * 获取视频时长
+     * @param videoPath 视频路径
+     * @return 视频时长(秒)
+     */
+    private double getVideoDuration(String videoPath) {
+        Process process = null;
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                    "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
+                    "default=noprint_wrappers=1:nokey=1", videoPath);
+            process = processBuilder.start();
+
+            try (InputStream inputStream = process.getInputStream();
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
+                String durationStr = reader.readLine();
+                if (durationStr != null) {
+                    return Double.parseDouble(durationStr);
+                }
+            }
+
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                printErrorInfo(processBuilder);
+            }
+        } catch (Exception e) {
+            log.error(e.getMessage(), e);
+        } finally {
+            if (process != null) {
+                process.destroyForcibly();
+            }
+        }
+        return 0.0;
+    }
+
+
+    /**
+     * 获取视频的分辨率和码率信息
+     * @param videoPath 视频路径
+     * @return 视频信息
+     */
+    private VideoInfo getVideoInfo(String videoPath) {
+        Process process = null;
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                    "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_format", "-show_streams", "-of", "json", videoPath);
+            process = processBuilder.start();
+            try (InputStream inputStream = process.getInputStream();
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
+                String json = reader.lines().collect(Collectors.joining());
+                JSONObject jsonObject = JSON.parseObject(json);
+
+                // 获取视频格式信息
+                JSONObject formatObject = jsonObject.getJSONObject("format");
+                String format = formatObject.getString("format_name");
+
+                // 获取视频流信息
+                JSONArray streamsArray = jsonObject.getJSONArray("streams");
+                if (!streamsArray.isEmpty()) {
+                    JSONObject streamObject = streamsArray.getJSONObject(0);
+                    int width = streamObject.getIntValue("width");
+                    int height = streamObject.getIntValue("height");
+                    int bitrate = streamObject.getIntValue("bit_rate") / 1000; // 转换为 kbps
+                    return new VideoInfo(width, height, format, bitrate);
+                }
+            }
+
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                printErrorInfo(processBuilder);
+            }
+        } catch (Exception e) {
+            log.error(e.getMessage(), e);
+        } finally {
+            if (process != null) {
+                process.destroyForcibly();
+            }
+        }
+        return new VideoInfo();
+    }
+
+    @Setter
+    @Getter
+    private static class VideoInfo {
+        private int width;
+        private int height;
+        private int bitrate;
+        private String format;
+        public VideoInfo() {
+            this.width = 1920;
+            this.height = 1080;
+            this.format = "mov,mp4,m4a,3gp,3g2,mj2";
+            this.bitrate = 3000;
+        }
+        public VideoInfo(int width, int height, String format, int bitrate) {
+            this.width = width;
+            this.height = height;
+            this.format = format;
+            this.bitrate = bitrate;
+            log.info("width: {}, height: {}, format: {}, bitrate: {}", width, height, format, bitrate);
+        }
+    }
+
+
+    public static boolean hasNoFFmpeg() {
+        Process process = null;
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder("ffmpeg", "-version");
+            process = processBuilder.start();
+            try (InputStream inputStream = process.getInputStream();
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.contains("ffmpeg version")) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        } catch (IOException e) {
+            log.error(e.getMessage(), e);
+        } finally {
+            if (process != null) {
+                process.destroyForcibly();
+            }
+        }
+        return true;
+    }
+
+}

@@ -1,0 +1,115 @@
+package com.jmal.clouddisk.config;
+
+import lombok.extern.slf4j.Slf4j;
+import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.cn.smart.SmartChineseAnalyzer;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.search.ControlledRealTimeReopenThread;
+import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.SearcherFactory;
+import org.apache.lucene.search.SearcherManager;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.FSDirectory;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import jakarta.annotation.PreDestroy;
+
+import java.io.IOException;
+import java.nio.file.Paths;
+
+/**
+ * @author jmal
+ * @Description Lucene Config
+ * @Date 2021/4/27 4:09 下午
+ */
+@Slf4j
+@Configuration
+public class LuceneConfig {
+    /**
+     * lucene索引,存放位置
+     */
+    private static final String LUCENE_INDEX_PATH = "lucene/index/";
+
+    private ControlledRealTimeReopenThread<IndexSearcher> cRTReopenThead;
+    private IndexWriter indexWriterRef;
+    private Directory directoryRef;
+
+    /**
+     * 创建一个 Analyzer 实例
+     */
+    @Bean
+    public Analyzer analyzer() {
+        return new SmartChineseAnalyzer();
+    }
+
+    /**
+     * 索引位置
+     */
+    @Bean
+    public Directory indexDir() throws IOException {
+        return FSDirectory.open(Paths.get(LUCENE_INDEX_PATH));
+    }
+
+    /**
+     * 创建indexWriter
+     *
+     * @param directory 索引位置
+     * @param analyzer  Analyzer
+     * @return IndexWriter
+     */
+    @Bean
+    public IndexWriter indexWriter(Directory directory, Analyzer analyzer) throws IOException {
+        IndexWriterConfig indexWriterConfig = new IndexWriterConfig(analyzer);
+        IndexWriter indexWriter = new IndexWriter(directory, indexWriterConfig);
+        // 保存引用用于shutdown时关闭
+        this.indexWriterRef = indexWriter;
+        this.directoryRef = directory;
+        return indexWriter;
+    }
+
+    /**
+     * SearcherManager管理
+     *
+     * @return SearcherManager
+     */
+    @Bean
+    public SearcherManager searcherManager(IndexWriter indexWriter) throws IOException {
+        SearcherManager searcherManager = new SearcherManager(indexWriter, false, false, new SearcherFactory());
+        cRTReopenThead = new ControlledRealTimeReopenThread<IndexSearcher>(indexWriter, searcherManager,
+                5.0, 0.025);
+        cRTReopenThead.setDaemon(true);
+        //线程名称
+        cRTReopenThead.setName("更新IndexReader线程");
+        // 开启线程
+        cRTReopenThead.start();
+        return searcherManager;
+    }
+
+    @PreDestroy
+    public void destroy() {
+        try {
+            cRTReopenThead.close();
+        } catch (Exception e) {
+            log.error("关闭Lucene ReopenThread失败", e);
+        }
+        try {
+            if (indexWriterRef != null && indexWriterRef.isOpen()) {
+                indexWriterRef.commit();
+                indexWriterRef.close();
+            }
+        } catch (IOException e) {
+            log.error("关闭IndexWriter失败", e);
+        }
+        try {
+            if (directoryRef != null) {
+                directoryRef.close();
+            }
+        } catch (IOException e) {
+            log.error("关闭Lucene Directory失败", e);
+        }
+    }
+
+}
+
